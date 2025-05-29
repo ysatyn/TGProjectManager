@@ -1,21 +1,20 @@
-from telebot.async_telebot import AsyncTeleBot
-from telebot import types
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from telebot.asyncio_helper import ApiTelegramException
-from telebot.asyncio_storage import memory_storage
-from telebot.asyncio_handler_backends import State, StatesGroup
-
+import enum
+import html
+import logging
 from datetime import datetime, timezone
 
-import logging
+from telebot import types
+from telebot.async_telebot import AsyncTeleBot
+from telebot.asyncio_handler_backends import State, StatesGroup
+from telebot.asyncio_helper import ApiTelegramException
+from telebot.asyncio_storage import memory_storage
+from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from db import crud
 from db.database import AsyncSessionLocal
 from db.exceptions import *
-from db.models import Invites, UserRole, TaskStatus, User, Project
-
-import html
-import enum
+from db.models import (Invites, Project, ProjectMember, TaskStatus, User,
+                       UserRole)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -80,6 +79,7 @@ async def handle_start(message: types.Message, bot: AsyncTeleBot):
         async with AsyncSessionLocal() as session:
             db_user = await crud.get_or_create_and_update_user(session=session, user_id=user_data.id, username=user_data.username, 
                                                                first_name=user_data.first_name, is_bot=user_data.is_bot)
+            db_chat = await crud.create_chat(session=session, chat_id=chat_id, chat_type=message.chat.type, chat_title=message.chat.first_name)
             user_name_from_db = db_user.first_name
         if len(command_parts) == 2:
             invite_code = command_parts[1]
@@ -435,111 +435,221 @@ async def handle_my_projects(message: types.Message, bot: AsyncTeleBot):
     except DatabaseError as e:
         await bot.send_message(chat_id, "Произошла ошибка при работе с базой данных во время получения списка проектов. Пожалуйста, попробуйте позже.")
 
-# async def handle_create_task(message: types.Message, bot: AsyncTeleBot):
-#     user_id = message.from_user.id
-#     chat_id = message.chat.id
-#     user_name = message.from_user.first_name
+async def handle_create_task(message: types.Message, bot: AsyncTeleBot):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    user_name = message.from_user.first_name
 
-#     user_data = message.from_user
+    user_data = message.from_user
 
-#     message_parts = message.text.split()
-#     if len(message_parts) != 2:
-#         try: await bot.send_message(chat_id=chat_id, text="Неправильное использование команды. Используйте в формате <code>/create_task ID_проекта</code>", parse_mode="HTML")
-#         except: pass
-#         return
-#     try: 
-#         project_id = int(message_parts[1])
-#     except ValueError:
-#         try: await bot.send_message(chat_id=chat_id, text="Неправильный ID проекта.", parse_mode="HTML")
-#         except: pass
-#         return
+    message_parts = message.text.split()
+    if len(message_parts) != 2:
+        try: await bot.send_message(chat_id=chat_id, text="Неправильное использование команды. Используйте в формате <code>/create_task ID_проекта</code>", parse_mode="HTML")
+        except: pass
+        return
+    try: 
+        project_id = int(message_parts[1])
+    except ValueError:
+        try: await bot.send_message(chat_id=chat_id, text="Неправильный ID проекта.", parse_mode="HTML")
+        except: pass
+        return
     
-#     try:
-#         async with AsyncSessionLocal() as session:
-#             project = await crud.get_project_by_id(session=session, project_id=project_id)
-#             user = await crud.get_user_by_id(session=session, user_id=user_id)
-#             if project.owner_user_id != user_id:
-#                 project_member = await crud.get_project_member(session=session, project_id=project_id, user_id=user_id)
-#                 if project_member.role != UserRole.HELPER.value:
-#                     try: await bot.send_message(chat_id=chat_id, text="У вас нет прав для создания задач в этом проекте.")
-#                     except: pass
-#                     return
+    try:
+        async with AsyncSessionLocal() as session:
+            project = await crud.get_project_by_id(session=session, project_id=project_id)
+            user = await crud.get_user_by_id(session=session, user_id=user_id)
+            if project.owner_user_id != user_id:
+                project_member = await crud.get_project_member(session=session, project_id=project_id, user_id=user_id)
+                if project_member.role != UserRole.HELPER.value:
+                    try: await bot.send_message(chat_id=chat_id, text="У вас нет прав для создания задач в этом проекте.")
+                    except: pass
+                    return
         
-#         message_text = f"Вы начали создание новой задачи для проекта <code>{escape_html(project.name)}</code>. Напишите название вашей задачи:"
-#         markup = InlineKeyboardMarkup()
-#         markup.add(InlineKeyboardButton(text="Удалить задачу", callback_data=f"cancel_task_creation"))
-#         await bot.send_message(chat_id=chat_id, text=message_text, reply_markup=markup, parse_mode="HTML")
-#         await bot.set_state(user_id=user_id, chat_id=chat_id, state=TaskCreationStates.set_description)
-#         async with bot.retrieve_data(user_id=user_id, chat_id=chat_id) as data:
-#             data["project_id"] = project_id
-#     except ProjectNotFoundError:
-#         try: await bot.send_message(chat_id=chat_id, text=f"Проект с ID <code>{project_id}</code> не найден.", parse_mode="HTML")
-#         except: pass
-#     except (UserNotFoundError, MemberNotFoundError):
-#         try: await bot.send_message(chat_id=chat_id, text="У вас нет прав на этот проект.", parse_mode="HTML")
-#         except: pass
-#     except DatabaseError:
-#         try: await bot.send_message(chat_id=chat_id, text="Произошла ошибка в базе данных. Попробуйте позднее")
-#         except: pass
-#     except Exception as e:
-#         print(e)
+        message_text = f"Вы начали создание новой задачи для проекта <code>{escape_html(project.name)}</code>. Напишите название вашей задачи:"
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton(text="Удалить задачу", callback_data=f"cancel_task_creation"))
+        await bot.send_message(chat_id=chat_id, text=message_text, reply_markup=markup, parse_mode="HTML")
+        z = await bot.set_state(user_id=user_id, chat_id=chat_id, state=TaskCreationStates.set_title)
+        print(z)
+        async with bot.retrieve_data(user_id=user_id, chat_id=chat_id) as data:
+            data["project_id"] = project_id
+            print(data)
+        print(await bot.get_state(user_id=user_id, chat_id=chat_id))
 
-# async def set_task_title(message: types.Message, bot: AsyncTeleBot):
-#     user_id = message.from_user.id
-#     chat_id = message.chat.id
+    except ProjectNotFoundError:
+        try: await bot.send_message(chat_id=chat_id, text=f"Проект с ID <code>{project_id}</code> не найден.", parse_mode="HTML")
+        except: pass
+    except (UserNotFoundError, MemberNotFoundError):
+        try: await bot.send_message(chat_id=chat_id, text="У вас нет прав на этот проект.", parse_mode="HTML")
+        except: pass
+    except DatabaseError as e:
+        try: await bot.send_message(chat_id=chat_id, text="Произошла ошибка в базе данных. Попробуйте позднее")
+        except: pass
+        print(e)
+    except Exception as e:
+        print(e)
 
-#     task_title = message.text
-
-#     message_text = f"Отправьте описание вашей задачи <code>{escape_html(task_title)}</code>. Если хотите оставить описание незаполненным, то напишите <code>пропустить</code>."
-
-#     await bot.delete_state(user_id=user_id, chat_id=chat_id)
-#     await bot.set_state(user_id=user_id, chat_id=chat_id, state=TaskCreationStates.set_assignee)
-
-#     async with bot.retrieve_data(user_id=user_id, chat_id=chat_id) as data:
-#         data["task_title"] = task_title
+async def process_task_title(message: types.Message, bot: AsyncTeleBot):
+    print(1)
+    user_id = message.from_user.id
+    chat_id = message.chat.id
     
-#     markup = InlineKeyboardMarkup()
-#     markup.add(InlineKeyboardButton(text="Удалить задачу", callback_data=f"cancel_task_creation"))
-#     try: await bot.send_message(chat_id=chat_id, text=message_text, reply_markup=markup, parse_mode="HTML")
-#     except: pass
+    async with bot.retrieve_data(user_id, chat_id) as data:
+        data['title'] = message.text
+    
+    await bot.set_state(user_id, TaskCreationStates.set_description, chat_id)
+    await bot.send_message(chat_id, "📝 Введите описание задачи (обязательно):")
 
-# async def process_description(message: types.Message, bot: AsyncTeleBot):
-#     user_id = message.from_user.id
-#     chat_id = message.chat.id
+async def process_task_description(message: types.Message, bot: AsyncTeleBot):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    description = message.text
+    
+    async with bot.retrieve_data(user_id, chat_id) as data:
+        data['description'] = description
+        project_id = data['project_id']
+        
+    async with AsyncSessionLocal() as session:
+        members = await crud.get_project_members(session, project_id)
+        project = await crud.get_project_by_id(session, project_id) 
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton(text="Назначить себе", callback_data=f"assignee_{user_id}"))
+    for member in members:
+        user = member.user
+        btn_text = f"{user.first_name} (@{user.username})" if user.username else user.first_name
+        markup.add(InlineKeyboardButton(text=btn_text,callback_data=f"assignee_{user.user_id}"))
+    markup.add(InlineKeyboardButton(text="🚫 Без исполнителя", callback_data="assignee_none"))
 
-#     async with bot.retrieve_data(user_id, chat_id) as data:
-#         data["description"] = message.text
+    
+    await bot.set_state(user_id, TaskCreationStates.set_assignee, chat_id)
+    await bot.send_message(chat_id, "👥 Выберите исполнителя:", reply_markup=markup)
 
-#     async with AsyncSessionLocal() as session:
-#         members = await crud.get_project_members(session, data["project_id"])
-#         project: Project = members[0].project
-#         if user_id == project.owner_user_id:
-#             user_role = UserRole.OWNER
-#         else:
-#             try:
-#                 project_member = 
-
-
-#     markup = InlineKeyboardMarkup(row_width=2)
-#     for member in members:
-#         btn_text = f"{member.user.first_name} (@{member.user.username})" if member.user.username else member.user.first_name
-#         markup.add(InlineKeyboardButton(
-#             text=btn_text,
-#             callback_data=f"assignee_{member.user.user_id}"
-#         ))
-#     markup.add(InlineKeyboardButton(
-#         text="🚫 Без исполнителя", 
-#         callback_data="assignee_none"
-#     ))
-
-#     await bot.set_state(user_id, TaskCreationStates.assignee, chat_id)
-#     await bot.send_message(chat_id, "👥 Выберите исполнителя:", reply_markup=markup)
-
-
-
-
-
-
+async def process_task_due_date(message: types.Message, bot: AsyncTeleBot):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    due_date = None
+    if message.text.lower() != 'пропустить':
+        try:
+            due_date = datetime.strptime(message.text, "%d.%m.%Y")
+        except ValueError:
+            await bot.send_message(chat_id, "❌ Неверный формат даты. Попробуйте еще раз.")
+            return
+    
+    if due_date and due_date.date() < datetime.now().date():
+        await bot.send_message(chat_id, "❌ Дата не может быть в прошлом")
+        return
+    
+    async with bot.retrieve_data(user_id=user_id, chat_id=chat_id) as data:
+        try:
+            project_id = data['project_id']
+            title = data['title']
+            description = data['description']
+            assignee_id = data.get('assignee_id')
+            
+            if assignee_id == 'none':
+                assignee_id = None
+            
+            async with AsyncSessionLocal() as session:
+                creator_user_role = await crud.get_user_project_role(
+                    session=session, 
+                    project_id=project_id, 
+                    user_id=user_id
+                )
+                
+                if assignee_id:
+                    assignee_user_role = await crud.get_user_project_role(
+                        session=session, 
+                        project_id=project_id, 
+                        user_id=assignee_id
+                    )
+                else:
+                    assignee_user_role = None
+                
+                need_confirm = False
+                if assignee_user_role and assignee_user_role != UserRole.MEMBER.value and creator_user_role != UserRole.OWNER.value:
+                    need_confirm = True
+                
+                task_status = TaskStatus.PENDING_ASSIGNMENT.value if need_confirm else TaskStatus.NEW.value
+                
+                task = await crud.create_task(
+                    session=session, 
+                    project_id=project_id, 
+                    creator_user_id=user_id, 
+                    title=title, 
+                    description=description, 
+                    chat_id_created_in=chat_id, 
+                    assignee_user_id=assignee_id, 
+                    status=task_status, 
+                    due_date=due_date
+                )
+                
+                project = await crud.get_project_by_id(session, project_id)
+                creator = await crud.get_user_by_id(session, user_id)
+                
+                message_text = f"✅ Задача {'отправлена на подтверждение' if need_confirm else 'создана'}!\n\n" \
+                              f"🔹 <b>{escape_html(task.title)}</b>\n" \
+                              f"🔹 ID в проекте: {task.task_id_in_project}\n" \
+                              f"🔹 Проект: {escape_html(project.name)}\n"
+                
+                if task.assignee:
+                    assignee_link = await create_user_link(task.assignee.user_id, task.assignee.first_name, task.assignee.username)
+                    message_text += f"🔹 Исполнитель: {assignee_link}\n"
+                
+                if task.due_date:
+                    message_text += f"🔹 Срок: {task.due_date.strftime('%d.%m.%Y')}\n"
+                
+                await bot.send_message(chat_id, message_text, parse_mode="HTML")
+                
+                if assignee_id and assignee_id != user_id:
+                    assignee_message = f"🔔 Вам {'назначена' if not need_confirm else 'предложена'} задача в проекте {escape_html(project.name)}:\n\n" \
+                                      f"<b>{escape_html(task.title)}</b>\n" \
+                                      f"Описание: {escape_html(task.description)}\n"
+                    
+                    if task.due_date:
+                        assignee_message += f"Срок: {task.due_date.strftime('%d.%m.%Y')}\n"
+                    
+                    assignee_message += f"Создатель: {await create_user_link(creator.user_id, creator.first_name, creator.username)}\n"
+                    
+                    if need_confirm:
+                        markup = InlineKeyboardMarkup()
+                        markup.add(
+                            InlineKeyboardButton(
+                                text="✅ Принять", 
+                                callback_data=f"confirm_task:{task.task_id}:accept"
+                            ),
+                            InlineKeyboardButton(
+                                text="❌ Отклонить", 
+                                callback_data=f"confirm_task:{task.task_id}:reject"
+                            )
+                        )
+                        assignee_message += "\nПодтвердите принятие задачи:"
+                    else:
+                        markup = None
+                        assignee_message += "\nВы были назначены исполнителем этой задачи."
+                    
+                    try:
+                        await bot.send_message(
+                            chat_id=assignee_id,
+                            text=assignee_message,
+                            reply_markup=markup,
+                            parse_mode="HTML"
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to send notification to assignee: {str(e)}")
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=f"Не удалось отправить уведомление исполнителю. Возможно, он не начал диалог с ботом.",
+                            parse_mode="HTML"
+                        )
+                
+        except Exception as e:
+            await bot.send_message(chat_id, "❌ Ошибка при создании задачи. Попробуйте позже.")
+            logger.error(f"Error creating task: {str(e)}")
+        finally:
+            await bot.delete_state(user_id, chat_id)
 
 
 async def handle_test(message: types.Message, bot: AsyncTeleBot):
@@ -1134,6 +1244,22 @@ async def handle_query_manage_single_invite(call: types.CallbackQuery, bot: Asyn
         except: pass
 
 
+async def process_task_assignee(call: types.CallbackQuery, bot: AsyncTeleBot):
+    user_id = call.from_user.id
+    chat_id = call.message.chat.id
+    
+    assignee_id = None
+    if call.data == "assignee_none":
+        assignee_id = 'none'
+    else:
+        assignee_id = int(call.data.split('_')[1])
+    
+    async with bot.retrieve_data(user_id, chat_id) as data:
+        data['assignee_id'] = assignee_id
+    
+    await bot.answer_callback_query(call.id)
+    await bot.set_state(user_id, TaskCreationStates.set_due_date, chat_id)
+    await bot.send_message(chat_id, "⏳ Введите срок выполнения задачи в формате ДД.ММ.ГГГГ (или 'пропустить'):")
 
 
 
@@ -1149,6 +1275,16 @@ async def handle_all_messges(message: types.Message, bot: AsyncTeleBot):
     if state is None:
         return
     
+    if state.startswith(f"TaskCreationStates"):
+        print("\n\n ", state)
+        if state == TaskCreationStates.set_title.name:
+            await process_task_title(message, bot)
+        elif state == TaskCreationStates.set_description.name:
+            await process_task_description(message, bot)
+        elif state == TaskCreationStates.set_due_date.name:
+            await process_task_due_date(message, bot)
+        return
+
     state_action = state.split(":", maxsplit=1)[0]
 
     await bot.delete_state(user_id=user_id, chat_id=chat_id)
@@ -1202,7 +1338,7 @@ def register_handlers(bot: AsyncTeleBot):
     bot.register_message_handler(lambda message: handle_invite(message, bot), commands=["invite"])
     bot.register_message_handler(lambda message: handle_my_projects(message, bot), commands=["my_projects"])
     bot.register_message_handler(lambda message: handle_test(message, bot), commands=["test"])
-    # bot.register_message_handler(lambda message: handle_create_task(message, bot), commands=["create_task"])
+    bot.register_message_handler(lambda message: handle_create_task(message, bot), commands=["create_task"])
 
     bot.register_callback_query_handler(lambda call: handle_callback_query_view_project_details(call, bot), func=lambda call: call.data and call.data.startswith('view_project_details:'))
     bot.register_callback_query_handler(lambda call: handle_query_back_to_my_projects(call, bot), func=lambda call: call.data and call.data == "back_to_my_projects")
@@ -1211,5 +1347,6 @@ def register_handlers(bot: AsyncTeleBot):
     bot.register_callback_query_handler(lambda call: handle_query_manage_project_menu(call, bot), func=lambda call: call.data and call.data.startswith("manage_project_menu"))
     bot.register_callback_query_handler(lambda call: handle_query_manage_project_invites(call, bot), func=lambda call: call.data and call.data.startswith("manage_project_invites"))
     bot.register_callback_query_handler(lambda call: handle_query_manage_single_invite(call, bot), func=lambda call: call.data and call.data.startswith("manage_single_invite"))
+    bot.register_callback_query_handler(lambda call: process_task_assignee(call, bot), func=lambda call: call.data and call.data.startswith("assignee_"))
 
     bot.register_message_handler(lambda message: handle_all_messges(message, bot), func=lambda message: True)
